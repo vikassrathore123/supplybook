@@ -1,6 +1,6 @@
 {
-  "name": "Company Register",
-  "short_name": "Register",
+  "name": "Artime",
+  "short_name": "Artime",
   "description": "Cash and stock entries, saved to the office sheet.",
   "start_url": "./index.html",
   "scope": "./",
