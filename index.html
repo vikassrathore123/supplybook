@@ -158,6 +158,7 @@
     background:var(--card); border-radius:20px 20px 0 0; padding:22px 20px calc(22px + env(safe-area-inset-bottom,0px));
     max-width:520px; width:100%;
   }
+  .link-btn{ display:block; width:100%; margin-top:10px; background:none; border:none; color:var(--ink-soft); font-size:.88rem; font-weight:700; padding:10px; cursor:pointer; }
   .modal h2{ font-size:1.1rem; margin:0 0 4px; }
   .modal p{ color:var(--ink-soft); font-size:.83rem; margin:0 0 16px; line-height:1.4; }
 </style>
@@ -255,13 +256,28 @@
 
 <div class="modal-overlay hidden" id="profileModal">
   <div class="modal">
-    <h2>Quick one-time setup</h2>
-    <p>This phone will remember your name and bank so you don't have to type them every time. Change them anytime by tapping the chip at the top.</p>
-    <label for="setupName">Your Name</label>
-    <input id="setupName" type="text" placeholder="Enter your name">
-    <label for="setupBank">Your Usual Bank (optional)</label>
-    <input id="setupBank" type="text" placeholder="e.g. SBI, HDFC...">
-    <button class="submit-btn" id="saveProfileBtn"><span>Save &amp; Continue</span></button>
+    <div id="loginView">
+      <h2>Log in</h2>
+      <p>Enter the name and PIN given to you by the office. You only need to do this once on this phone.</p>
+      <label for="setupName">Your Name</label>
+      <input id="setupName" type="text" placeholder="Name given by the office" autocomplete="off">
+      <label for="setupPin">PIN</label>
+      <input id="setupPin" type="password" inputmode="numeric" placeholder="Your PIN" autocomplete="off">
+      <label for="setupBank">Your Usual Bank (optional)</label>
+      <input id="setupBank" type="text" placeholder="e.g. SBI, HDFC...">
+      <div class="status err" id="loginError"></div>
+      <button class="submit-btn" id="loginBtn"><span class="spinner"></span><span>Log in</span></button>
+      <button class="link-btn hidden" id="loginCancelBtn">Cancel</button>
+    </div>
+    <div id="accountView" class="hidden">
+      <h2 id="accountName"></h2>
+      <p>You are logged in on this phone. Every entry you make is saved under this name.</p>
+      <label for="accountBank">Your Usual Bank</label>
+      <input id="accountBank" type="text" placeholder="e.g. SBI, HDFC...">
+      <button class="submit-btn" id="saveBankBtn"><span>Save bank</span></button>
+      <button class="link-btn" id="switchUserBtn">Log out / switch user</button>
+      <button class="link-btn" id="closeAccountBtn">Close</button>
+    </div>
   </div>
 </div>
 
@@ -284,39 +300,89 @@ function showToast(msg, kind){
   showToast._h = setTimeout(() => { t.className = 'toast ' + (kind || ''); }, 2600);
 }
 
-/* ---------- Profile (name + bank), remembered on this phone ---------- */
+/* ---------- Login (name + PIN checked by the sheet), remembered on this phone ---------- */
 const PROFILE_KEY = 'companyRegisterProfile';
 function getProfile(){ try{ return JSON.parse(localStorage.getItem(PROFILE_KEY) || 'null'); }catch(e){ return null; } }
 function setProfile(p){ try{ localStorage.setItem(PROFILE_KEY, JSON.stringify(p)); }catch(e){} }
+function isLoggedIn(){ const p = getProfile(); return !!(p && p.name && p.pin); }
 function renderProfileChip(){
-  const p = getProfile();
-  document.getElementById('profileChipText').textContent = p ? p.name : 'Set up';
+  document.getElementById('profileChipText').textContent = isLoggedIn() ? getProfile().name : 'Log in';
 }
-document.getElementById('profileChip').addEventListener('click', () => {
-  const p = getProfile() || {};
-  document.getElementById('setupName').value = p.name || '';
-  document.getElementById('setupBank').value = p.bank || '';
+function showLogin(canCancel){
+  document.getElementById('loginView').classList.remove('hidden');
+  document.getElementById('accountView').classList.add('hidden');
+  document.getElementById('loginError').textContent = '';
+  ['setupName','setupPin','setupBank'].forEach(id => document.getElementById(id).value = '');
+  document.getElementById('loginCancelBtn').classList.toggle('hidden', !canCancel);
   document.getElementById('profileModal').classList.remove('hidden');
+}
+function showAccount(){
+  const p = getProfile();
+  document.getElementById('accountName').textContent = p.name;
+  document.getElementById('accountBank').value = p.bank || '';
+  document.getElementById('loginView').classList.add('hidden');
+  document.getElementById('accountView').classList.remove('hidden');
+  document.getElementById('profileModal').classList.remove('hidden');
+}
+function closeModal(){ document.getElementById('profileModal').classList.add('hidden'); }
+
+document.getElementById('profileChip').addEventListener('click', () => {
+  if (isLoggedIn()) showAccount(); else showLogin(false);
 });
-document.getElementById('saveProfileBtn').addEventListener('click', () => {
-  const name = document.getElementById('setupName').value.trim();
-  if (!name){ alert('Please enter your name.'); return; }
-  const bank = document.getElementById('setupBank').value.trim();
-  setProfile({ name, bank });
+document.getElementById('closeAccountBtn').addEventListener('click', closeModal);
+document.getElementById('loginCancelBtn').addEventListener('click', closeModal);
+
+document.getElementById('saveBankBtn').addEventListener('click', () => {
+  const p = getProfile(); if (!p) return;
+  p.bank = document.getElementById('accountBank').value.trim();
+  setProfile(p);
+  document.getElementById('bankName').value = p.bank;
+  closeModal();
+  showToast('Bank saved', 'ok');
+});
+document.getElementById('switchUserBtn').addEventListener('click', () => {
+  try{ localStorage.removeItem(PROFILE_KEY); }catch(e){}
+  document.getElementById('bankName').value = '';
   renderProfileChip();
-  applyProfileDefaults();
-  document.getElementById('profileModal').classList.add('hidden');
+  showLogin(false);
 });
+
+document.getElementById('loginBtn').addEventListener('click', async () => {
+  const errEl = document.getElementById('loginError');
+  const btn = document.getElementById('loginBtn');
+  const name = document.getElementById('setupName').value.trim();
+  const pin = document.getElementById('setupPin').value.trim();
+  const bank = document.getElementById('setupBank').value.trim();
+  errEl.textContent = '';
+  if (!name || !pin){ errEl.textContent = 'Please enter your name and PIN.'; return; }
+  if (APPS_SCRIPT_URL.indexOf('PASTE_YOUR') === 0){ errEl.textContent = 'App is not connected to the sheet yet.'; return; }
+  btn.classList.add('loading'); btn.disabled = true;
+  try{
+    const res = await postToAppsScript({ action:'verify', name, pin });
+    if (res.result === 'success'){
+      setProfile({ name: res.name, pin, bank: bank || res.bank || '' });
+      renderProfileChip();
+      document.getElementById('bankName').value = getProfile().bank;
+      closeModal();
+      showToast('Logged in as ' + res.name, 'ok');
+    } else {
+      errEl.textContent = res.message || 'Wrong name or PIN.';
+    }
+  }catch(e){
+    errEl.textContent = 'No internet. Connect and try again.';
+  }
+  btn.classList.remove('loading'); btn.disabled = false;
+});
+
 function applyProfileDefaults(){
   const p = getProfile();
   if (!p) return;
   if (!document.getElementById('bankName').value) document.getElementById('bankName').value = p.bank || '';
 }
 (function initProfile(){
-  const p = getProfile();
   renderProfileChip();
-  if (!p){ document.getElementById('profileModal').classList.remove('hidden'); }
-  else { applyProfileDefaults(); }
+  if (!isLoggedIn()) showLogin(false);
+  else applyProfileDefaults();
 })();
 
 /* ---------- Bottom nav tabs ---------- */
@@ -467,22 +533,30 @@ async function flushQueue(){
   flushing = true;
   const syncBtn = document.getElementById('syncNowBtn');
   if (syncBtn) syncBtn.textContent = 'Syncing...';
-  let failed = false;
+  let failed = false, authProblem = false;
   let q;
   while ((q = getQueue()).length > 0){
     try{
-      const result = await postToAppsScript(q[0].payload);
+      const item = q[0];
+      if (!item.payload.pin){ // entry saved by an older version: sign it with this phone's own login
+        const pr = getProfile();
+        if (pr && pr.pin && String(item.payload.enteredBy || '').toLowerCase() === String(pr.name).toLowerCase()){
+          item.payload.pin = pr.pin; setQueue(q);
+        }
+      }
+      const result = await postToAppsScript(item.payload);
       if (result.result === 'success'){
         const cur = getQueue(); const done = cur.shift(); setQueue(cur);
         markLogSynced(done.id); flushFailed = false; renderSyncBanner();
-      } else { failed = true; break; }
+      } else { failed = true; if (result.code === 'auth') authProblem = true; break; }
     }catch(e){ failed = true; break; } // offline or server issue — keep the rest queued
   }
   flushing = false;
   if (syncBtn) syncBtn.textContent = 'Sync now';
   if (failed){
     flushFailed = true;
-    showToast('Saved on phone — will sync when signal returns', 'pending');
+    if (authProblem) showToast('An entry was rejected — please log in again', 'err');
+    else showToast('Saved on phone — will sync when signal returns', 'pending');
   }
   renderSyncBanner();
 }
@@ -571,9 +645,9 @@ document.getElementById('submitCash').addEventListener('click', async () => {
   const purpose = document.getElementById('cashPurpose').value.trim();
   const bankName = cashMode === 'Bank' ? document.getElementById('bankName').value.trim() : ''; // no bank name for cash
 
-  if (!profile || !profile.name){
-    statusEl.textContent = 'Please complete the one-time setup first.'; statusEl.className = 'status err';
-    document.getElementById('profileModal').classList.remove('hidden'); return;
+  if (!isLoggedIn()){
+    statusEl.textContent = 'Please log in first.'; statusEl.className = 'status err';
+    showLogin(false); return;
   }
   if (!amount || !purpose || (cashMode === 'Bank' && !bankName)){
     statusEl.textContent = 'Please fill in all required fields.'; statusEl.className = 'status err'; return;
@@ -581,7 +655,7 @@ document.getElementById('submitCash').addEventListener('click', async () => {
 
   btn.classList.add('loading'); btn.disabled = true; statusEl.textContent = ''; statusEl.className = 'status';
   const result = await sendOrQueue('cash', {
-    formType: 'cash', direction: cashDirection, mode: cashMode, bankName, amount, purpose, enteredBy: profile.name
+    formType: 'cash', direction: cashDirection, mode: cashMode, bankName, amount, purpose, enteredBy: profile.name, pin: profile.pin
   }, 'cashLog', cashDirection, cashDirection === 'Received' ? 'pos' : 'neg',
     `₹${amount} — ${purpose} (${cashMode}${bankName ? ': ' + bankName : ''})`);
 
@@ -602,9 +676,9 @@ document.getElementById('submitStock').addEventListener('click', async () => {
   const statusEl = document.getElementById('stockStatus');
   const btn = document.getElementById('submitStock');
   const profile = getProfile();
-  if (!profile || !profile.name){
-    statusEl.textContent = 'Please complete the one-time setup first.'; statusEl.className = 'status err';
-    document.getElementById('profileModal').classList.remove('hidden'); return;
+  if (!isLoggedIn()){
+    statusEl.textContent = 'Please log in first.'; statusEl.className = 'status err';
+    showLogin(false); return;
   }
 
   const items = [];
@@ -631,7 +705,7 @@ document.getElementById('submitStock').addEventListener('click', async () => {
   const party = document.getElementById('stockParty').value.trim();
   btn.classList.add('loading'); btn.disabled = true; statusEl.textContent = ''; statusEl.className = 'status';
   const result = await sendOrQueue('stock', {
-    formType: 'stock', movement: stockMovement, party, enteredBy: profile.name, items
+    formType: 'stock', movement: stockMovement, party, enteredBy: profile.name, pin: profile.pin, items
   }, 'stockLog', stockMovement, stockMovement === 'Sale' ? 'pos' : 'neg', `${items.length} item(s) saved`);
 
   if (result.ok){
