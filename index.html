@@ -569,7 +569,7 @@ document.getElementById('submitCash').addEventListener('click', async () => {
   const profile = getProfile();
   const amount = document.getElementById('cashAmount').value;
   const purpose = document.getElementById('cashPurpose').value.trim();
-  const bankName = document.getElementById('bankName').value.trim();
+  const bankName = cashMode === 'Bank' ? document.getElementById('bankName').value.trim() : ''; // no bank name for cash
 
   if (!profile || !profile.name){
     statusEl.textContent = 'Please complete the one-time setup first.'; statusEl.className = 'status err';
