@@ -3,11 +3,14 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<title>Company Register</title>
+<title>Artime</title>
 <link rel="manifest" href="manifest.webmanifest">
 <meta name="theme-color" content="#1C2B3A">
 <link rel="icon" href="icon-192.png">
 <link rel="apple-touch-icon" href="icon-192.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Artime">
 <style>
   :root{
     --paper:#F6F3EC; --card:#FFFFFF; --ink:#26241E; --ink-soft:#726D5E; --ink-faint:#A29C89;
@@ -69,6 +72,7 @@
     flex:1; padding:12px 0; border:1.5px solid var(--line); border-radius:10px;
     background:#FFFEFB; font-size:.92rem; font-weight:700; color:var(--ink-soft); cursor:pointer; min-height:46px;
   }
+  .segmented button.active{ background:var(--focus); border-color:var(--focus); color:#fff; }
   .segmented button.active.pos{ background:var(--green-soft); border-color:var(--green); color:var(--green); }
   .segmented button.active.neg{ background:var(--rust-soft); border-color:var(--rust); color:var(--rust); }
   .row2{ display:grid; grid-template-columns:1fr 1fr; gap:10px; }
@@ -114,6 +118,9 @@
   .log-item .tag{ font-weight:800; font-size:.72rem; text-transform:uppercase; padding:3px 8px; border-radius:6px; flex-shrink:0; }
   .tag.pos{ color:var(--green); background:var(--green-soft); } .tag.neg{ color:var(--rust); background:var(--rust-soft); }
   .tag.pending{ color:var(--amber); background:var(--amber-soft); }
+  .log-time{ font-size:.7rem; color:var(--ink-faint); margin-top:2px; }
+  .log-clear{ background:none; border:none; color:var(--ink-faint); font-size:.72rem; font-weight:700; cursor:pointer; text-decoration:underline; }
+  .log-head{ display:flex; justify-content:space-between; align-items:center; }
   .log-empty{ color:var(--ink-faint); font-size:.82rem; text-align:center; padding:16px; }
 
   /* ---------- bottom nav ---------- */
@@ -159,7 +166,7 @@
 
 <div class="topbar">
   <div>
-    <h1>Company Register</h1>
+    <h1>Artime</h1>
     <div class="sub" id="topbarSub">Cash &amp; stock entries</div>
   </div>
   <div class="chip" id="profileChip"><span class="dot"></span><span id="profileChipText">Set up</span></div>
@@ -205,7 +212,7 @@
       <button class="submit-btn" id="submitCash"><span class="spinner"></span><span>Save Entry</span></button>
       <div class="status" id="cashStatus"></div>
     </div>
-    <div class="log-title">Recent</div>
+    <div class="log-head"><div class="log-title">Recent</div><button class="log-clear" data-log="cashLog">Clear</button></div>
     <div class="log" id="cashLog"><div class="log-empty">Entries you save will appear here.</div></div>
   </div>
 
@@ -228,7 +235,7 @@
       <button class="submit-btn" id="submitStock"><span class="spinner"></span><span>Save Entry</span></button>
       <div class="status" id="stockStatus"></div>
     </div>
-    <div class="log-title">Recent</div>
+    <div class="log-head"><div class="log-title">Recent</div><button class="log-clear" data-log="stockLog">Clear</button></div>
     <div class="log" id="stockLog"><div class="log-empty">Entries you save will appear here.</div></div>
   </div>
 </div>
@@ -436,10 +443,11 @@ loadSuggestions();
 const QUEUE_KEY = 'pendingEntries';
 function getQueue(){ try{ return JSON.parse(localStorage.getItem(QUEUE_KEY) || '[]'); }catch(e){ return []; } }
 function setQueue(q){ try{ localStorage.setItem(QUEUE_KEY, JSON.stringify(q)); }catch(e){} }
+let flushing = false, flushFailed = false;
 function renderSyncBanner(){
   const q = getQueue();
   const banner = document.getElementById('syncBanner');
-  if (q.length === 0){ banner.classList.add('hidden'); return; }
+  if (q.length === 0 || !flushFailed){ banner.classList.add('hidden'); return; }
   banner.classList.remove('hidden');
   document.getElementById('syncBannerText').textContent =
     q.length + (q.length === 1 ? ' entry waiting to sync' : ' entries waiting to sync');
@@ -453,19 +461,29 @@ async function postToAppsScript(payload){
   return res.json();
 }
 async function flushQueue(){
+  if (flushing) return;
   if (APPS_SCRIPT_URL.indexOf('PASTE_YOUR') === 0) return;
-  let q = getQueue();
-  if (q.length === 0) return;
+  if (getQueue().length === 0) return;
+  flushing = true;
   const syncBtn = document.getElementById('syncNowBtn');
   if (syncBtn) syncBtn.textContent = 'Syncing...';
-  while (q.length > 0){
+  let failed = false;
+  let q;
+  while ((q = getQueue()).length > 0){
     try{
       const result = await postToAppsScript(q[0].payload);
-      if (result.result === 'success'){ q.shift(); setQueue(q); renderSyncBanner(); }
-      else break;
-    }catch(e){ break; } // offline or server issue — stop, keep the rest queued
+      if (result.result === 'success'){
+        const cur = getQueue(); const done = cur.shift(); setQueue(cur);
+        markLogSynced(done.id); flushFailed = false; renderSyncBanner();
+      } else { failed = true; break; }
+    }catch(e){ failed = true; break; } // offline or server issue — keep the rest queued
   }
+  flushing = false;
   if (syncBtn) syncBtn.textContent = 'Sync now';
+  if (failed){
+    flushFailed = true;
+    showToast('Saved on phone — will sync when signal returns', 'pending');
+  }
   renderSyncBanner();
 }
 document.getElementById('syncNowBtn').addEventListener('click', flushQueue);
@@ -473,39 +491,75 @@ window.addEventListener('online', flushQueue);
 renderSyncBanner();
 setTimeout(flushQueue, 1200);
 
-function addLogItem(containerId, label, cls, detail){
-  const container = document.getElementById(containerId);
-  const empty = container.querySelector('.log-empty');
-  if (empty) empty.remove();
-  const item = document.createElement('div');
-  item.className = 'log-item';
-  item.innerHTML = `<span class="tag ${cls}">${label}</span><span style="flex:1;">${detail}</span>`;
-  container.prepend(item);
+/* ---------- Recent entries: kept on the phone (last 50 per tab) ---------- */
+const LOG_KEY = 'recentLogs';
+const LOG_MAX = 50;
+function getLogs(){ try{ return JSON.parse(localStorage.getItem(LOG_KEY) || '{}'); }catch(e){ return {}; } }
+function setLogs(l){ try{ localStorage.setItem(LOG_KEY, JSON.stringify(l)); }catch(e){} }
+function esc(t){ return String(t).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+function fmtTime(ts){
+  return new Date(ts).toLocaleString('en-IN', { day:'numeric', month:'short', hour:'numeric', minute:'2-digit' });
 }
+function renderLogs(){
+  const logs = getLogs();
+  ['cashLog','stockLog'].forEach(id => {
+    const container = document.getElementById(id);
+    container.innerHTML = '';
+    const list = logs[id] || [];
+    if (list.length === 0){
+      container.innerHTML = '<div class="log-empty">Entries you save will appear here.</div>';
+      return;
+    }
+    list.forEach(e => {
+      const el = document.createElement('div');
+      el.className = 'log-item';
+      el.innerHTML = `<span class="tag ${e.cls}">${esc(e.label)}</span><span style="flex:1;">${esc(e.detail)}<div class="log-time">${fmtTime(e.ts)}</div></span>`;
+      container.appendChild(el);
+    });
+  });
+}
+function addLogItem(containerId, label, cls, detail, qid, origCls){
+  const logs = getLogs();
+  const list = logs[containerId] || [];
+  list.unshift({ label, cls, detail, ts: Date.now(), qid: qid || null, origCls: origCls || cls });
+  logs[containerId] = list.slice(0, LOG_MAX);
+  setLogs(logs);
+  renderLogs();
+}
+function markLogSynced(qid){
+  const logs = getLogs();
+  Object.keys(logs).forEach(k => logs[k].forEach(e => {
+    if (e.qid === qid){ e.cls = e.origCls; e.detail = e.detail.replace(' — pending sync', ''); e.qid = null; }
+  }));
+  setLogs(logs);
+  renderLogs();
+}
+document.querySelectorAll('.log-clear').forEach(b => b.addEventListener('click', () => {
+  if (!confirm('Clear this list from the phone? Your Google Sheet is not affected.')) return;
+  const logs = getLogs(); logs[b.dataset.log] = []; setLogs(logs); renderLogs();
+}));
+renderLogs();
 
-/* Try live first; if it fails (offline / server down), queue it instead of losing it. */
+/* Save instantly on the phone, then send to the sheet in the background. */
+function addSuggestion(listId, value){
+  if (!value) return;
+  const dl = document.getElementById(listId);
+  if (![...dl.options].some(o => o.value.toLowerCase() === value.toLowerCase())){
+    const o = document.createElement('option'); o.value = value; dl.appendChild(o);
+  }
+}
 async function sendOrQueue(formType, payload, logContainer, logLabel, logCls, logDetail){
   if (APPS_SCRIPT_URL.indexOf('PASTE_YOUR') === 0){
     return { ok:false, message:'Set up your Apps Script URL first (see warning above).' };
   }
-  try{
-    const result = await postToAppsScript(payload);
-    if (result.result === 'success'){
-      addLogItem(logContainer, logLabel, logCls, logDetail);
-      showToast('Saved ✓', 'ok');
-      return { ok:true };
-    }
-    return { ok:false, message: result.message || 'Could not save.' };
-  }catch(e){
-    // network failure — queue for later, don't lose the entry
-    const q = getQueue();
-    q.push({ id: Date.now(), payload, createdAt: new Date().toISOString() });
-    setQueue(q);
-    renderSyncBanner();
-    addLogItem(logContainer, logLabel, 'pending', logDetail + ' — pending sync');
-    showToast('No signal — saved on phone, will sync later', 'pending');
-    return { ok:true, queued:true };
-  }
+  const q = getQueue();
+  const qid = Date.now() + Math.floor(Math.random() * 1000);
+  q.push({ id: qid, payload, createdAt: new Date().toISOString() });
+  setQueue(q);
+  addLogItem(logContainer, logLabel, 'pending', logDetail + ' — pending sync', qid, logCls);
+  showToast('Saved ✓', 'ok');
+  flushQueue(); // runs in the background — no waiting
+  return { ok:true };
 }
 
 /* ---------- Cash submit ---------- */
@@ -534,6 +588,7 @@ document.getElementById('submitCash').addEventListener('click', async () => {
   if (result.ok){
     statusEl.textContent = result.queued ? 'Saved offline — will sync automatically' : 'Saved ✓';
     statusEl.className = 'status ' + (result.queued ? '' : 'ok');
+    addSuggestion('bankList', bankName);
     document.getElementById('cashAmount').value = ''; document.getElementById('cashPurpose').value = '';
   } else {
     statusEl.textContent = 'Error: ' + result.message; statusEl.className = 'status err';
@@ -582,6 +637,7 @@ document.getElementById('submitStock').addEventListener('click', async () => {
   if (result.ok){
     statusEl.textContent = result.queued ? 'Saved offline — will sync automatically' : 'Saved ✓';
     statusEl.className = 'status ' + (result.queued ? '' : 'ok');
+    addSuggestion('partyList', party);
     document.getElementById('stockParty').value = ''; resetItemRows();
   } else {
     statusEl.textContent = 'Error: ' + result.message; statusEl.className = 'status err';
